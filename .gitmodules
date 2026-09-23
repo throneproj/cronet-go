@@ -1,4 +1,4 @@
 [submodule "naiveproxy"]
 	path = naiveproxy
-	url = https://github.com/SagerNet/naiveproxy.git
-	branch = cronet-go
+	url = https://github.com/throneproj/naiveproxy.git
+	branch = throne/72a06c9
