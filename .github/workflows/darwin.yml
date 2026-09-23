@@ -65,7 +65,7 @@ jobs:
       - name: Build and run test binary
         if: matrix.target == 'darwin/arm64'
         run: |
-          CGO_ENABLED=1 go -C test test -c -o ../cronet.test .
+          CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" go -C test test -c -o ../cronet.test .
           ./cronet.test -test.v -test.run=TestEngineVersion
       - uses: actions/upload-artifact@v4
         with:
