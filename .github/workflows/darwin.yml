@@ -1,0 +1,117 @@
+name: Build darwin
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  darwin:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin/amd64
+            name: darwin-amd64
+          - target: darwin/arm64
+            name: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
+      - name: Get naiveproxy commit
+        id: naive
+        run: echo "commit=$(git -C naiveproxy rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - name: Get Chromium version
+        id: chromium
+        run: echo "version=$(cat naiveproxy/CHROMIUM_VERSION)" >> $GITHUB_OUTPUT
+      - name: Cache build artifacts
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: naiveproxy/src/out
+          key: naive-build-${{ steps.naive.outputs.commit }}-${{ hashFiles('cmd/build-naive/cmd_build.go', 'cmd/build-naive/cmd.go') }}-${{ matrix.name }}
+      - name: Cache ccache files
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-darwin-${{ matrix.name }}-${{ steps.chromium.outputs.version }}
+          restore-keys: ccache-darwin-${{ matrix.name }}-
+      - name: Install tools
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: brew install ninja ccache
+      - name: Reset ccache stats
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: ccache -z
+      - name: Build
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: go run ./cmd/build-naive --target=${{ matrix.target }} build
+      - name: Show ccache stats
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: ccache -s
+      - name: Package
+        run: |
+          go run ./cmd/build-naive --target=${{ matrix.target }} package --local
+          go run ./cmd/build-naive --target=${{ matrix.target }} package
+      - name: Build and run test binary
+        if: matrix.target == 'darwin/arm64'
+        run: |
+          CGO_ENABLED=1 go -C test test -c -o ../cronet.test .
+          ./cronet.test -test.v -test.run=TestEngineVersion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cronet-${{ matrix.name }}
+          path: |
+            lib/
+            include/
+            include_cgo.go
+            lib_*_cgo.go
+
+  publish:
+    if: github.ref_name == 'main' && !contains(github.event.head_commit.message, '[skip publish]')
+    needs: [darwin]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Merge artifacts
+        run: |
+          for dir in artifacts/cronet-*/; do
+            cp -r "$dir"/* .
+          done
+          ls -laR lib/ include/ include_cgo.go
+
+      - name: Record the headers each lib was built against
+        run: |
+          for dir in lib/*/; do
+            mkdir -p "$dir/include"
+            cp include/*.h "$dir/include/"
+          done
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish
+        run: go run ./cmd/build-naive publish --branch go
